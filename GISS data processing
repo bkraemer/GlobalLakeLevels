@@ -1,0 +1,107 @@
+##############################GISS##################################
+###The goal here is to generate a PCA to reduce the dimensionality 
+###of the GISS-LOTI data into a more reasonable number of variables to
+###be used as predictors of lake level variability in an ANN
+
+#open the nc file
+File.nc<-nc_open("gistemp1200_ERSSTv5.nc")
+print(File.nc)
+
+#get the data
+lon<-ncvar_get(File.nc,"lon")
+lat<-ncvar_get(File.nc,"lat")
+time<-ncvar_get(File.nc,"time")
+temp<-ncvar_get(File.nc,"tempanomaly")
+
+#close the nc file
+nc_close(File.nc)
+
+#Create dataframe
+indices <- expand.grid(lon,lat,time)
+GISS <- data.frame(cbind(indices, as.vector(temp)))
+rm(indices)
+rm(temp)
+names(GISS)<-c("lon","lat","time","temp")
+
+#simplify the dataframe and transform date to as.Date
+GISS<-na.omit(GISS)
+GISS$date<-as.Date(GISS$time,origin="1800-01-01")
+
+#subset the data to the time of satellite lake level observations
+GISS<-GISS[which(GISS$time>36525),]
+
+#write the dataframe to a file with original filename plus ".txt"
+GISS$lonlat<-paste("lon",GISS$lon,"lat",GISS$lat,sep="")
+
+#read-write the data
+fwrite(GISS,"D:/GlobalLakeLevels/GISS_v1.csv")
+GISS<-fread("GISS_v1.csv")
+
+#Prep the data for PCA
+head(GISS)
+GISS$temp<-round(GISS$temp,digits=2)
+GISS$date<-as.Date(GISS$date)
+
+GISS_wide<-as.data.frame(spread(GISS[,c(3,4,5,6)],key=lonlat,value=temp,fill="NA"))
+summary(GISS_wide[,c(1:5)])
+head(GISS_wide[c(1:5),c(1:5)])
+summary(GISS_wide[c(1:100)])
+
+for(i in c(1,3:ncol(GISS_wide))) {
+  GISS_wide[,i] <- as.numeric(GISS_wide[,i])
+}
+
+#read-write the data
+fwrite(GISS_wide,"D:/GlobalLakeLevels/GISS_wide_v1.csv")
+GISS_wide<-fread("D:/GlobalLakeLevels/GISS_wide_v1.csv")
+
+#Run the PCA
+GISS_wide$date<-as.Date(GISS_wide$date)
+GISS_wide[date=="1992-01-15"]
+GISS_wide<-GISS_wide[date>"1992-01-01"]
+#GISS_wide<-GISS_wide[which(GISS_wide$time>=58440),]
+PCA_100<-PCA(GISS_wide[,c(3:16176)],ncp=320,graph=FALSE)                  
+PCA_coord<-as.data.frame(PCA_100$ind$coord)
+PCA_coord<-cbind(GISS_wide[,c(1:2)],PCA_coord)
+PCA_coord$year<-year(PCA_coord$date)
+PCA_coord$month<-month(PCA_coord$date)
+fwrite(PCA_coord,"D:/GlobalLakeLevels/PCA_coord_v1.csv")
+PCA_coord<-fread("D:/GlobalLakeLevels/PCA_coord_v1.csv")
+
+#summary(PCA_coord[,c(1:5)])
+#names(PCA_coord)
+fwrite(PCA_100$eig,"D:/GlobalLakeLevels/PCA_100_eig_v1.csv")
+
+#plot the coordinates across time
+plot(data=PCA_coord,Dim.1~date)
+
+#extract the geospatial loadings on each PC
+PCA_contrib<-as.data.frame(PCA_100$var$contrib)
+PCA_contrib<-cbind(as.data.frame(dimnames(PCA_100$var$contrib)[1]),PCA_contrib)
+names(PCA_contrib)[1]<-"latlon"
+row.names(PCA_contrib) <- seq(nrow(PCA_contrib))
+
+PCA_contrib$lon<-str_split_fixed(PCA_contrib$latlon,"lat",2)[,1]
+PCA_contrib$lat<-str_split_fixed(PCA_contrib$latlon,"lat",2)[,2]
+PCA_contrib$lon<-gsub("lon","",PCA_contrib$lon)
+PCA_contrib$lon<-as.numeric(gsub("\\.","-",PCA_contrib$lon))
+PCA_contrib$lat<-as.numeric(gsub("\\.","-",PCA_contrib$lat))
+
+PCA_contrib$lon<-as.numeric(PCA_contrib$lon)
+PCA_contrib$lat<-as.numeric(PCA_contrib$lat)
+
+
+fwrite(PCA_contrib,"D:/GlobalLakeLevels/PCA_contrib_v2.csv")
+
+#extract the geospatial correlations with each PC
+PCA_cor<-as.data.frame(PCA_100$var$cor)
+PCA_cor<-cbind(as.data.frame(dimnames(PCA_100$var$cor)[1]),PCA_cor)
+names(PCA_cor)[1]<-"latlon"
+row.names(PCA_cor) <- seq(nrow(PCA_cor))
+
+PCA_cor$lon<-str_split_fixed(PCA_cor$latlon,"lat",2)[,1]
+PCA_cor$lat<-str_split_fixed(PCA_cor$latlon,"lat",2)[,2]
+PCA_cor$lon<-gsub("lon","",PCA_cor$lon)
+PCA_cor$lon<-as.numeric(PCA_cor$lon)
+PCA_cor$lat<-as.numeric(PCA_cor$lat)
+fwrite(PCA_cor,"D:/GlobalLakeLevels/PCA_cor_v2.csv")
