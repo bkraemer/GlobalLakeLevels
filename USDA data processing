@@ -1,0 +1,121 @@
+##############################USDA##################################
+###The goal here is to generate an interpolated and consistent set of lake
+###level time series at monthly resolution to be used for trend analyses.
+
+
+
+#Download the lake level data
+download.file("https://ipad.fas.usda.gov/lakes/images/lakes.TPJOJ.2.smooth.txt.tar.gz",
+"U:/B.Kraemer/GlobalLakeLevels_IGB/lakes.TPJOJ.2.smooth.txt.tar.gz")#change this destination file to match your working directory
+
+#unzip the file
+#FOR NOW DO THIS MANUALLY
+
+#Find the data files
+files <- list.files(path="U:/B.Kraemer/GlobalLakeLevels_IGB/lakes.TPJOJ.2.smooth.txt", pattern=".txt") # change this line of code to match your working directory
+setwd("lakes.TPJOJ.2.smooth.txt") # change this line of code to match your working directory
+
+#Read and merge the data
+for (file in files){
+  tryCatch({
+    # if the merged dataset doesn't exist, create it
+    if (!exists("dataset")){
+      dataset <- read.table(paste0(wd,"/",file,sep=""), header=FALSE, sep="",skip=11)
+    colnames(dataset)<-c("date","hour","min","level")
+    dataset<-dataset[which(dataset$date!=99999999),]
+    dataset<-dataset[which(dataset$level!=999.99),]
+    dataset$date<-as.Date(as.character(dataset$date),"%Y%m%d")
+    dataset$lakeID<-as.factor(gsub(".TPJOJ.2.smooth.txt","",file))
+      }
+    
+    # if the merged dataset does exist, append to it
+    if (exists("dataset")){
+      temp_dataset <-read.table(paste0(wd,"/",file,sep=""), header=FALSE, sep="",skip=11)
+      colnames(temp_dataset)<-c("date","hour","min","level")
+      temp_dataset<-temp_dataset[which(temp_dataset$date!=99999999),]
+      temp_dataset<-temp_dataset[which(temp_dataset$level!=999.99),]
+      temp_dataset$date<-as.Date(as.character(temp_dataset$date),"%Y%m%d")
+      temp_dataset$lakeID<-as.factor(gsub(".TPJOJ.2.smooth.txt","",file))
+      dataset<-rbind(dataset, temp_dataset)
+      rm(temp_dataset)
+    }
+  },error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+TPJO<-unique(dataset)
+TPJO$date<-as_date(TPJO$date)
+
+#first pass of weeding out lakes with insufficient data
+TPJO<-TPJO[,minyear:=min(year(date)),by=.(lakeID)]
+TPJO<-TPJO[minyear<1998]
+TPJO<-TPJO[,minyear:=NULL]
+
+#Time Series interpolation with kalman filter for each lake
+TPJO$lakeID<-as.factor(TPJO$lakeID)
+LakeNames<-unique(TPJO$lakeID)
+
+#Processing loops for data interpolation to a daily timsecale
+for(lake in LakeNames) {
+  tryCatch({
+    
+    #prep the data
+    print(lake)
+    lakedata<-droplevels(TPJO[which(TPJO$lakeID==paste(lake,sep="")),])
+    lakedata<-lakedata[,c(1,4)]
+
+    #set time boundaries
+    min_date<-min(lakedata$date,na.rm=TRUE)
+    max_date<-max(lakedata$date,na.rm=TRUE)
+
+    #Set the time series frequency
+    TPJO_time<-seq.Date(from=min_date,to=max_date,by=1)
+    TPJO_time<-as.data.frame(TPJO_time)
+    colnames(TPJO_time)<-"date"
+    lakedata<-merge(TPJO_time,lakedata,all.x=TRUE)
+
+    #model and interpolate the data
+    lakedata$fit <- ts(rowSums(tsSmooth(StructTS(lakedata[,"level"]))))
+    lakedata$resid<-lakedata$level-lakedata$fit
+    lakedata$resid_fit <- na.approx(lakedata[,"resid"],maxgap=365) 
+    lakedata$resid_fit[is.na(lakedata$resid_fit)]<-10000
+    lakedata$level_interp<-lakedata$fit+lakedata$resid_fit
+    lakedata$date<-as.Date(lakedata$date,"%Y-%m-%d")
+    lakedata$lakeID<-lake
+    lakedata[,1]<-as.Date(lakedata[,1])
+    lakedata[,2]<-as.numeric(lakedata[,2])
+    lakedata[,3]<-as.numeric(lakedata[,3])
+    lakedata[,4]<-as.numeric(lakedata[,4])
+    lakedata[,5]<-as.numeric(lakedata[,5])
+    lakedata[,6]<-as.numeric(lakedata[,6])
+    lakedata[,7]<-as.factor(lakedata[,7])
+    
+
+    # if the interpolated dataset doesn exhist then create it
+    if (!exists("TPJO_interp")){
+      TPJO_interp <- lakedata
+    }
+    
+    # if the merged dataset does exist, append to it
+    if (exists("TPJO_interp")){
+      TPJO_interp<-rbind(TPJO_interp,lakedata)
+      rm(lakedata)
+    }
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+#subset to remove the overinterpolated values
+TPJO_interp<-TPJO_interp[resid_fit<500,]
+
+#calcualte additional time variables
+TPJO_interp$date<-as_date(TPJO_interp$date)
+TPJO_interp$lakeID<-as.factor(TPJO_interp$lakeID)
+TPJO_interp$year<-year(TPJO_interp$date)
+TPJO_interp$doy<-yday(TPJO_interp$date)
+TPJO_interp$month<-month(TPJO_interp$date,label=FALSE,abbr=FALSE)
+
+#Calculate monthly averages
+TPJO_interp_bymonth<-TPJO_interp[,.(level=mean(level_interp)),by=.(lakeID,year,month)]
+summary(TPJO_interp_bymonth)
+head(TPJO_interp_bymonth)
+TPJO_interp_bymonth$decyear<-TPJO_interp_bymonth$year+(TPJO_interp_bymonth$month-.5)/12
+TPJO_interp_bymonth$date<-date_decimal(TPJO_interp_bymonth$decyear)
