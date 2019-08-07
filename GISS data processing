@@ -1,10 +1,16 @@
 ##############################GISS##################################
 ###The goal here is to generate a PCA to reduce the dimensionality 
 ###of the GISS-LOTI data into a more reasonable number of variables to
-###be used as predictors of lake level variability in an ANN
+###be used as predictors of lake level variability
+
+
+download.file("https://data.giss.nasa.gov/pub/gistemp/GHCNv3/gistemp1200_ERSSTv5.nc.gz","U:/B.Kraemer/GlobalLakeLevels_IGB/gistemp1200_ERSSTv5.nc.gz")
+
+#unzip the file
+#FOR NOW DO THIS MANUALLY
 
 #open the nc file
-File.nc<-nc_open("gistemp1200_ERSSTv5.nc")
+File.nc<-nc_open("gistemp1200_ERSSTv5.nc") #edit to suit your working directory
 print(File.nc)
 
 #get the data
@@ -33,10 +39,6 @@ GISS<-GISS[which(GISS$time>36525),]
 #write the dataframe to a file with original filename plus ".txt"
 GISS$lonlat<-paste("lon",GISS$lon,"lat",GISS$lat,sep="")
 
-#read-write the data
-fwrite(GISS,"D:/GlobalLakeLevels/GISS_v1.csv")
-GISS<-fread("GISS_v1.csv")
-
 #Prep the data for PCA
 head(GISS)
 GISS$temp<-round(GISS$temp,digits=2)
@@ -51,51 +53,78 @@ for(i in c(1,3:ncol(GISS_wide))) {
   GISS_wide[,i] <- as.numeric(GISS_wide[,i])
 }
 
-#read-write the data
-fwrite(GISS_wide,"D:/GlobalLakeLevels/GISS_wide_v1.csv")
-GISS_wide<-fread("D:/GlobalLakeLevels/GISS_wide_v1.csv")
-
 #Run the PCA
 GISS_wide$date<-as.Date(GISS_wide$date)
-GISS_wide[date=="1992-01-15"]
 GISS_wide<-GISS_wide[date>"1992-01-01"]
-#GISS_wide<-GISS_wide[which(GISS_wide$time>=58440),]
-PCA_100<-PCA(GISS_wide[,c(3:16176)],ncp=320,graph=FALSE)                  
-PCA_coord<-as.data.frame(PCA_100$ind$coord)
-PCA_coord<-cbind(GISS_wide[,c(1:2)],PCA_coord)
-PCA_coord$year<-year(PCA_coord$date)
-PCA_coord$month<-month(PCA_coord$date)
-fwrite(PCA_coord,"D:/GlobalLakeLevels/PCA_coord_v1.csv")
-PCA_coord<-fread("D:/GlobalLakeLevels/PCA_coord_v1.csv")
+PCA_326<-pca(GISS_wide[,c(3:16176)],method="nipals",nPcs=326,center=TRUE,scale="uv")                  
+PCA_scores<-as.data.frame(PCA_326@scores)
+PCA_scores<-cbind(GISS_wide[,c(1:2)],PCA_scores)
+PCA_scores$year<-year(PCA_scores$date)
+PCA_scores$month<-month(PCA_scores$date)
 
-#summary(PCA_coord[,c(1:5)])
-#names(PCA_coord)
-fwrite(PCA_100$eig,"D:/GlobalLakeLevels/PCA_100_eig_v1.csv")
+#filter and remove the trends from the PCs
+PCA_scores<-fread("D:/GlobalLakeLevels/PCA_scores_v1.csv")
+PCA_scores$date<-as_date(PCA_scores$date)
+PCA_scores$decyear<-decimal_date(PCA_scores$date)
+PCA_scores.l<-melt(PCA_scores[,c(3:328,331)],id="decyear")
+PCnames<-unique(PCA_scores.l$variable)
 
-#plot the coordinates across time
-plot(data=PCA_coord,Dim.1~date)
+for(PC in PCnames){
+  tryCatch({
+  PC_data<-PCA_scores.l[variable==PC]
+  PC_data<-PC_data[order(decyear)]
+  PC_data$value<-rollmean(PC_data$value,3,na.pad=TRUE,align="right")
+  PC_data<-na.omit(PC_data)
+  PC_data$fit<-ts(rowSums(tsSmooth(StructTS(PC_data[,value]))))
+  PC_data$fit_detrend<-zyp.sen(data=PC_data,fit~decyear)$residuals
+  PC_data$fit_detrend.z<-(PC_data$fit_detrend-median(PC_data$fit_detrend))/mad(PC_data$fit_detrend,constant=1)
+  
+  # Merge the data into a single file
+  # if the merged dataset doesn't exist, create it
+  if (!exists("PCA_scores_kalman")){PCA_scores_kalman <- PC_data}
+  # if the merged dataset does exist, append to it
+  if (exists("PCA_scores_kalman")){PCA_scores_kalman<-rbindlist(list(PCA_scores_kalman,PC_data))}
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
 
-#extract the geospatial loadings on each PC
-PCA_contrib<-as.data.frame(PCA_100$var$contrib)
-PCA_contrib<-cbind(as.data.frame(dimnames(PCA_100$var$contrib)[1]),PCA_contrib)
-names(PCA_contrib)[1]<-"latlon"
-row.names(PCA_contrib) <- seq(nrow(PCA_contrib))
+PCA_scores_kalman<-as.data.table(unique(PCA_scores_kalman))
 
-PCA_contrib$lon<-str_split_fixed(PCA_contrib$latlon,"lat",2)[,1]
-PCA_contrib$lat<-str_split_fixed(PCA_contrib$latlon,"lat",2)[,2]
-PCA_contrib$lon<-gsub("lon","",PCA_contrib$lon)
-PCA_contrib$lon<-as.numeric(gsub("\\.","-",PCA_contrib$lon))
-PCA_contrib$lat<-as.numeric(gsub("\\.","-",PCA_contrib$lat))
+#go back to wide format
+PCA_scores_detrend.w<-cast(PCA_scores_kalman[,c(1,2,6)],decyear~variable)
 
-PCA_contrib$lon<-as.numeric(PCA_contrib$lon)
-PCA_contrib$lat<-as.numeric(PCA_contrib$lat)
-
-
-fwrite(PCA_contrib,"D:/GlobalLakeLevels/PCA_contrib_v2.csv")
+#extract the correlations among PCs
+PC_cor<-cor(PCA_scores_detrend.w,method="kendall")
+PC_cor<-as.data.table(PC_cor)
 
 #extract the geospatial correlations with each PC
-PCA_cor<-as.data.frame(PCA_100$var$cor)
-PCA_cor<-cbind(as.data.frame(dimnames(PCA_100$var$cor)[1]),PCA_cor)
+PCA_completeObs<-PCA_326@completeObs
+decyear<-PCA_scores_detrend.w$decyear
+PCA_completeObs<-PCA_completeObs[c(3:326)]
+PCA_completeObs<-cbind(decyear,PCA_completeObs)
+PCA_completeObs_l<-melt(PCA_completeObs,id.vars="decyear",measure.vars=names(PCA_completeObs)[2:16175])
+names(PCA_completeObs_l)<-c("decyear","lonlat","temp")
+PCA_scores_detrend<-as.data.table(PCA_scores_detrend.w)
+
+for(i in 2:101){
+PC_i<-(PCA_scores_detrend[,..i])
+names(PC_i)<-"PC"
+PCA_completeObs_l$PC<-rep(PC_i$PC,times=16174)
+PCA_completeObs_l<-as.data.table(PCA_completeObs_l)
+PCA_cor_i<-PCA_completeObs_l[,.(PCcor=cor(x=temp,y=PC,method="kendall"),
+                                PCcor_p=cor.test(x=temp,y=PC,method="kendall")$p.value),
+                             by=.(lonlat)]  
+PCA_cor_i$PC<-paste0("PC",i-1) 
+
+print(i)
+print(Sys.time())
+#print the cors
+# if the interpolated dataset doesnt exhist then create it
+if (!exists("PCA_cor")){PCA_cor <- PCA_cor_i}
+# if the merged dataset does exist, append to it
+if (exists("PCA_cor")){PCA_cor<-rbindlist(list(PCA_cor,PCA_cor_i))}
+}
+
+head(PCA_cor)
 names(PCA_cor)[1]<-"latlon"
 row.names(PCA_cor) <- seq(nrow(PCA_cor))
 
@@ -104,4 +133,45 @@ PCA_cor$lat<-str_split_fixed(PCA_cor$latlon,"lat",2)[,2]
 PCA_cor$lon<-gsub("lon","",PCA_cor$lon)
 PCA_cor$lon<-as.numeric(PCA_cor$lon)
 PCA_cor$lat<-as.numeric(PCA_cor$lat)
-fwrite(PCA_cor,"D:/GlobalLakeLevels/PCA_cor_v2.csv")
+PCA_cor$PC<-as.factor(PCA_cor$PC)
+
+#Correlation between PCs and the teleconnection indeces
+urlfile<-'https://raw.github.com/aronlindberg/latent_growth_classes/master/LGC_data.csv'
+index<-fread(urlfile,header=TRUE) #change to suit location of the file on github
+index<-index[,c(1:14)]
+index_l<-index %>%
+  gather(month,IndexValue,3:14)
+names(index_l)<-c("index","year","month","value")
+head(index_l)
+
+PCA<-fread("D:/GlobalLakeLevels/PCA_scores_detrend_v1.csv",header=TRUE)
+PCA<-PCA[,c(1:101)]
+
+PCA_l<-PCA %>%
+  gather(PC,PCvalue,2:101)
+
+#Calculate correlation coefss with the PCs and telleconnection index values
+head(index_l)
+head(PCA_l)
+PCA_l$date<-date_decimal(PCA_l$decyear)
+PCA_l$year<-year(PCA_l$date)
+PCA_l$month<-month(PCA_l$date,label=TRUE,abbr=TRUE)
+
+PCAindex<-merge(index_l,PCA_l,by=c("year","month"),all=TRUE)
+summary(PCAindex)
+PCAindex<-PCAindex[c(1,2,3,4,6,7,8)]
+PCAindex$month<-as.factor(PCAindex$month)
+PCAindex$PC<-as.factor(PCAindex$PC)
+
+completeFun <- function(data, desiredCols) {
+  completeVec <- complete.cases(data[, desiredCols])
+  return(data[completeVec, ])
+}
+
+PCAindex<-completeFun(PCAindex,"value")
+PCAindex<-completeFun(PCAindex,"PCvalue")
+
+PCAindex_cor<-ddply(PCAindex,.(index,PC),
+                    summarise,
+                    cor=Kendall(value,PCvalue)$tau,
+                    corP=Kendall(value,PCvalue)$sl)
