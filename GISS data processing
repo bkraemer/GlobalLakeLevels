@@ -3,6 +3,17 @@
 ###of the GISS-LOTI data into a more reasonable number of variables to
 ###be used as predictors of lake level variability
 
+require(ncdf4)
+require(plyr)
+require(dplyr)
+require(reshape2)
+require(tidyr)
+require(data.table)
+require(lubridate)
+require(zyp)
+require(rkt)
+require(pcaMethods)
+
 
 download.file("https://data.giss.nasa.gov/pub/gistemp/GHCNv3/gistemp1200_ERSSTv5.nc.gz","U:/B.Kraemer/GlobalLakeLevels_IGB/gistemp1200_ERSSTv5.nc.gz")
 
@@ -94,7 +105,6 @@ PCA_scores_detrend.w<-cast(PCA_scores_kalman[,c(1,2,6)],decyear~variable)
 
 #extract the correlations among PCs
 PC_cor<-cor(PCA_scores_detrend.w,method="kendall")
-PC_cor<-as.data.table(PC_cor)
 
 #extract the geospatial correlations with each PC
 PCA_completeObs<-PCA_326@completeObs
@@ -136,8 +146,8 @@ PCA_cor$lat<-as.numeric(PCA_cor$lat)
 PCA_cor$PC<-as.factor(PCA_cor$PC)
 
 #Correlation between PCs and the teleconnection indeces
-urlfile<-'https://raw.github.com/aronlindberg/latent_growth_classes/master/LGC_data.csv'
-index<-fread(urlfile,header=TRUE) #change to suit location of the file on github
+urlfile<-'https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_Indeces_v3.csv'
+index<-fread(urlfile,header=TRUE) 
 index<-index[,c(1:14)]
 index_l<-index %>%
   gather(month,IndexValue,3:14)
