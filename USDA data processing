@@ -2,7 +2,13 @@
 ###The goal here is to generate an interpolated and consistent set of lake
 ###level time series at monthly resolution to be used for trend analyses.
 
-
+require(plyr)
+require(dplyr)
+require(reshape2)
+require(tidyr)
+require(data.table)
+require(lubridate)
+require(zoo)
 
 #Download the lake level data
 download.file("https://ipad.fas.usda.gov/lakes/images/lakes.TPJOJ.2.smooth.txt.tar.gz",
