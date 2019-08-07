@@ -1,0 +1,771 @@
+##################BRT model selection######################
+###Merge the lake level data with the PCA data of global surface temp data
+###And use it to factor out the influence of PCs on lake levels in each lake
+###Select the best model according to its performance in cross validation
+
+
+
+TPJO<-fread("TPJO_interp_byMonth_v3.csv")
+names(TPJO)
+head(TPJO)
+GISS<-fread("PCA_scores_detrend_v2.csv")
+names(GISS)
+GISS$date<-date_decimal(GISS$decyear)
+GISS$year<-year(GISS$date)
+GISS$month<-month(GISS$date,label=FALSE,abbr=FALSE)
+head(GISS$month)
+TPJO_brt<-merge(TPJO,GISS,all.x=TRUE,by=c("month","year"))
+TPJO_brt<-TPJO_brt[,c(1,2,3,4,8:333)]
+TPJO_brt[,decyear:=(year+(month-0.5)/12)]
+fwrite(TPJO_brt,"U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_brt_v2.csv")
+
+#percentvariance explained
+percentvar<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/PCA326_r2_v1.csv")
+percentvar$PC<-c(1:326)
+percentvar$PC<-paste("PC",percentvar$PC,sep="")
+names(percentvar)[1]<-"percvar"
+fwrite(percentvar,"U:/B.Kraemer/GlobalLakeLevels_IGB/PCA_percentvar_v4.csv")
+
+#read in the function for simplifying BRTS
+
+gbm.simplify_v2<-function (gbm.object=BRT1, n.folds = 10, n.drops = "auto", alpha = 1, 
+                           prev.stratify = TRUE, eval.data = NULL, plot = TRUE) 
+{
+  if (!requireNamespace("gbm")) {
+    stop("you need to install the gbm package to run this function")
+  }
+  requireNamespace("splines")
+  gbm.call <- gbm.object$gbm.call
+  data <- gbm.call$dataframe
+  n.cases <- nrow(data)
+  gbm.x <- gbm.call$gbm.x
+  gbm.y <- gbm.call$gbm.y
+  family <- gbm.call$family
+  lr <- gbm.call$learning.rate
+  tc <- gbm.call$tree.complexity
+  start.preds <- length(gbm.x)
+  max.drops <- start.preds - 2
+  response.name <- gbm.call$response.name
+  predictor.names <- gbm.call$predictor.names
+  n.trees <- gbm.call$best.trees
+  pred.list <- list(initial = gbm.x)
+  weights <- gbm.object$weights
+  if (n.drops == "auto") {
+    auto.stop <- TRUE
+  }
+  else {
+    auto.stop <- FALSE
+  }
+  orig.data <- data
+  orig.gbm.x <- gbm.x
+  original.deviance <- round(gbm.object$cv.statistics$deviance.mean, 
+                             4)
+  original.deviance.se <- round(gbm.object$cv.statistics$deviance.se, 
+                                4)
+  message("gbm.simplify - version 2.9 \nsimplifying gbm.step model for ", 
+          response.name, " with ", start.preds, " predictors and ", 
+          n.cases, " observations \noriginal deviance = ", original.deviance, 
+          "(", original.deviance.se, ")")
+  if (auto.stop) {
+    message("variable removal will proceed until average change exceeds the original se")
+    n.drops <- 1
+  }
+  else {
+    if (n.drops > start.preds - 2) {
+      message("value of n.drops (", n.drops, ") is greater than permitted\nresetting value to ", 
+              start.preds - 2)
+      n.drops <- start.preds - 2
+    }
+    else {
+      message("a fixed number of ", n.drops, " drops will be tested")
+    }
+  }
+  dev.results <- matrix(0, nrow = n.drops, ncol = n.folds)
+  dimnames(dev.results) <- list(paste("drop.", 1:n.drops, sep = ""), 
+                                paste("rep.", 1:n.folds, sep = ""))
+  drop.count <- matrix(NA, nrow = start.preds, ncol = n.folds)
+  dimnames(drop.count) <- list(predictor.names, paste("rep.", 
+                                                      1:n.folds, sep = ""))
+  original.deviances <- rep(0, n.folds)
+  model.list <- list(paste("model", c(1:n.folds), sep = ""))
+  gbm.call.string <- paste("try(gbm.fixed(data=train.data,gbm.x=gbm.new.x,gbm.y=gbm.y,", 
+                           sep = "")
+  gbm.call.string <- paste(gbm.call.string, "family=family,learning.rate=lr,tree.complexity=tc,", 
+                           sep = "")
+  gbm.call.string <- paste(gbm.call.string, "n.trees = ", n.trees, 
+                           ", site.weights = weights.subset,verbose=FALSE))", sep = "")
+  if (prev.stratify & family == "bernoulli") {
+    presence.mask <- data[, gbm.y] == 1
+    absence.mask <- data[, gbm.y] == 0
+    n.pres <- sum(presence.mask)
+    n.abs <- sum(absence.mask)
+    selector <- rep(0, n.cases)
+    temp <- rep(seq(1, n.folds, by = 1), length = n.pres)
+    temp <- temp[order(runif(n.pres, 1, 100))]
+    selector[presence.mask] <- temp
+    temp <- rep(seq(1, n.folds, by = 1), length = n.abs)
+    temp <- temp[order(runif(n.abs, 1, 100))]
+    selector[absence.mask] <- temp
+  }
+  else {
+    selector <- rep(seq(1, n.folds, by = 1), length = n.cases)
+    selector <- selector[order(runif(n.cases, 1, 100))]
+  }
+  message("creating initial models...")
+  gbm.new.x <- orig.gbm.x
+  for (i in 1:n.folds) {
+    train.data <- orig.data[selector != i, ]
+    weights.subset <- weights[selector != i]
+    #eval.data <- orig.data[selector == i, ]
+    gbm.new.x<-gbm.x
+    model.list[[i]] <- eval(parse(text = gbm.call.string))
+    u_i <- eval.data[[gbm.y]]
+    y_i <- gbm::predict.gbm(model.list[[i]], eval.data, n.trees, 
+                            "response")
+    original.deviances[i] <- round(calc.deviance(u_i, y_i, 
+                                                 family = family, calc.mean = TRUE), 4)
+  }
+  n.steps <- 1
+  message("dropping predictor:", appendLF = FALSE)
+  while (n.steps <= n.drops & n.steps <= max.drops) {
+    message(" ", n.steps, appendLF = FALSE)
+    for (i in 1:n.folds) {
+      train.data <- orig.data[selector != i, ]
+      #eval.data <- orig.data[selector == i, ]
+      weights.subset <- weights[selector != i]
+      gbm.x <- model.list[[i]]$gbm.call$gbm.x
+      n.preds <- length(gbm.x)
+      these.pred.names <- model.list[[i]]$gbm.call$predictor.names
+      contributions <- model.list[[i]]$contributions
+      last.variable <- match(as.character(contributions[n.preds, 
+                                                        1]), these.pred.names)
+      gbm.new.x <- gbm.x[-last.variable]
+      last.variable <- match(as.character(contributions[n.preds, 
+                                                        1]), predictor.names)
+      drop.count[last.variable, i] <- n.steps
+      model.list[[i]] <- eval(parse(text = gbm.call.string))
+      u_i <- eval.data[[gbm.y]]
+      y_i <- gbm::predict.gbm(model.list[[i]], eval.data, 
+                              n.trees, "response")
+      deviance <- round(calc.deviance(u_i, y_i, family = family, 
+                                      calc.mean = TRUE), 4)
+      dev.results[n.steps, i] <- round(deviance - original.deviances[i], 
+                                       4)
+    }
+    if (auto.stop) {
+      delta.mean <- mean(dev.results[n.steps, ])
+      if (delta.mean < (alpha * original.deviance.se)) {
+        n.drops <- n.drops + 1
+        dev.results <- rbind(dev.results, rep(0, n.folds))
+      }
+    }
+    n.steps <- n.steps + 1
+  }
+  message("")
+  dimnames(dev.results) <- list(paste("drop.", 1:n.drops, sep = ""), 
+                                paste("rep.", 1:n.folds, sep = ""))
+  mean.delta <- apply(dev.results, 1, mean)
+  se.delta <- sqrt(apply(dev.results, 1, var))/sqrt(n.folds)
+  if (plot) {
+    y.max <- 1.5 * max(mean.delta + se.delta)
+    y.min <- 1.5 * min(mean.delta - se.delta)
+    plot(seq(0, n.drops), c(0, mean.delta), xlab = "variables removed", 
+         ylab = "change in predictive deviance", type = "l", 
+         ylim = c(y.min, y.max))
+    lines(seq(0, n.drops), c(0, mean.delta) + c(0, se.delta), 
+          lty = 2)
+    lines(seq(0, n.drops), c(0, mean.delta) - c(0, se.delta), 
+          lty = 2)
+    abline(h = 0, lty = 2, col = 3)
+    min.y <- min(c(0, mean.delta))
+    min.pos <- match(min.y, c(0, mean.delta)) - 1
+    abline(v = min.pos, lty = 3, col = 2)
+    abline(h = original.deviance.se, lty = 2, col = 2)
+    title(paste("RFE deviance - ", response.name, " - folds = ", 
+                n.folds, sep = ""))
+  }
+  message("processing final dropping of variables with full data")
+  gbm.call.string <- paste("try(gbm.fixed(data=orig.data,gbm.x=gbm.new.x,gbm.y=gbm.y,", 
+                           sep = "")
+  gbm.call.string <- paste(gbm.call.string, "family=family,learning.rate=lr,tree.complexity=tc,", 
+                           sep = "")
+  gbm.call.string <- paste(gbm.call.string, "n.trees = ", n.trees, 
+                           ", site.weights = weights,verbose=FALSE))", sep = "")
+  n.steps <- n.steps - 1
+  final.model <- gbm.object
+  train.data <- orig.data
+  final.drops <- matrix(NA, nrow = start.preds, ncol = 1)
+  dimnames(final.drops) <- list(predictor.names, "step")
+  for (i in 1:n.steps) {
+    gbm.x <- final.model$gbm.call$gbm.x
+    n.preds <- length(gbm.x)
+    these.pred.names <- final.model$gbm.call$predictor.names
+    contributions <- final.model$contributions
+    message(i, "-", as.character(contributions[n.preds, 1]))
+    last.variable <- match(as.character(contributions[n.preds, 
+                                                      1]), these.pred.names)
+    gbm.new.x <- gbm.x[-last.variable]
+    last.variable <- match(as.character(contributions[n.preds, 
+                                                      1]), predictor.names)
+    final.drops[last.variable] <- i
+    final.model <- eval(parse(text = gbm.call.string))
+  }
+  removal.list <- dimnames(final.drops)[[1]]
+  removal.list <- removal.list[order(final.drops)]
+  removal.list <- removal.list[1:n.drops]
+  removal.numbers <- rep(0, n.steps)
+  for (i in 1:n.steps) {
+    removal.numbers[i] <- match(removal.list[i], predictor.names)
+    pred.list[[i]] <- orig.gbm.x[0 - removal.numbers[1:i]]
+    names(pred.list)[i] <- paste("preds.", i, sep = "")
+  }
+  deviance.summary <- data.frame(mean = round(mean.delta, 4), 
+                                 se = round(se.delta, 4))
+  final.drops <- data.frame(preds = dimnames(final.drops)[[1]][order(final.drops)], 
+                            order = final.drops[order(final.drops)])
+  return(list(deviance.summary = deviance.summary, deviance.matrix = dev.results, 
+              drop.count = drop.count, final.drops = final.drops, pred.list = pred.list, 
+              gbm.call = gbm.call))
+}
+
+#read in the data for brts
+TPJO_brt<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_brt_v2.csv",stringsAsFactors = TRUE)
+TPJO_brt<-TPJO_brt[order(lakeID,year,month),]
+
+#Read in data for desktop computer
+#TPJO_brt<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/PCA_brt_v2.csv",stringsAsFactors = TRUE)
+#TPJO_brt$month<-match(TPJO_brt$month,month.abb)
+#TPJO_brt<-TPJO_brt[order(lakeID,year,month),]
+#rm(list=setdiff(ls(),c("TPJO_brt")))
+#percentvar<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/PCA_percentvar_v4.csv",header=TRUE,stringsAsFactors = TRUE)
+#
+#percentvar<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/PCA_percentvar_v4.csv",header=TRUE,stringsAsFactors = TRUE)
+#names(percentvar)[2]<-"var"
+
+#names(modeldata)
+#summary(modeldata_relimp$PCAnumber)
+#unique(modeldata_relimp$PCAnumber)
+#lakedata_pbrt[PCAnumber==1]$PCAnumber<-0
+#modeldata[PCAnumber==1]$PCAnumber<-0
+#modeldata_relimp[PCAnumber==1]$PCAnumber<-0
+
+###Model loops
+#set model parameters
+LakeNames<-unique(TPJO_brt$lakeID)
+learningrate<-c(0.8192,0.4096,0.2048,0.1024,0.0512,0.0256,0.0128,0.0064,0.0032,0.0016,0.0008,0.0004,0.0002,0.0001,0.00005,0.000025,0.0000125,0.00000625,0.000003125,0.0000015625,.00000078125,0.000000360925)
+splits<-c(0.4,0.5,0.6)
+n<-c(1,331,5:104)
+
+#modeldata<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/GLL_modeldata_v6.csv")
+#LakeNames<-setdiff(unique(TPJO_brt$lakeID),unique(modeldata$lake))
+
+
+#test values
+#i<-1
+#i<-100
+#i<-8
+#lake<-"lake0315"
+#s<-1
+#X<-1
+#n<-"Dim.86"
+#lr<-0.6048
+#split<-0.5
+
+
+##loop for detemring what is the best number of PCs to include for each lake using backward elimination
+for(lake in LakeNames){
+  tryCatch({
+    
+    print(lake)
+    print(Sys.time())
+    
+    #prep the data
+    lakedata<-(TPJO_brt[which(TPJO_brt$lakeID==paste(lake,sep="")),])
+    
+    for(split in splits){
+      tryCatch({
+        
+        print(split)
+        train<-1:(nrow(lakedata)*split)
+        test<-(nrow(lakedata)*split):nrow(lakedata)
+          
+        for(lr in learningrate) {
+          tryCatch({
+            
+            BRT1<-gbm.step(
+              data=lakedata[train],
+              gbm.x=n,
+              gbm.y=4,
+              family="gaussian",
+              tree.complexity=5,
+              learning.rate=lr,
+              max.trees=10000,
+              bag.fraction=.7,
+              silent=TRUE,
+              plot.main=FALSE,
+              plot.folds=FALSE
+              )
+            
+            if(is.null(BRT1)==FALSE){
+            if(BRT1$n.trees>1000) break}
+            
+          }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+        }
+        
+        
+        BRT1_relimp<-data.table(BRT1$contributions)
+        
+        BRT1_simple<-gbm.simplify_v2(BRT1,
+                                     n.folds=10,
+                                     n.drops=100,
+                                     eval.data=lakedata[test],
+                                     plot=FALSE)
+        
+        BRT1_final.drops<-BRT1_simple$final.drops
+        BRT1_final.drops$deviance.mean<-c(BRT1_simple$deviance.summary$mean,"NA","NA")
+        BRT1_final.drops$deviance.se<-c(BRT1_simple$deviance.summary$se,"NA","NA")
+        names(BRT1_final.drops)[1]<-"var"
+        BRT1_modeldata<-merge(BRT1_final.drops,BRT1_relimp,by="var",all=T)
+        BRT1_modeldata$set<-1
+        
+        for(lr in learningrate) {
+          tryCatch({
+            
+            BRT2<-gbm.step(
+              data=lakedata[test],
+              gbm.x=n,
+              gbm.y=4,
+              family="gaussian",
+              tree.complexity=5,
+              learning.rate=lr,
+              max.trees=10000,
+              bag.fraction=.7,
+              silent=TRUE,
+              plot.main=FALSE,
+              plot.folds=FALSE
+            )
+            
+            if(is.null(BRT2)==FALSE){
+              if(BRT2$n.trees>1000) break}
+            
+          }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+        }
+            
+        BRT2_relimp<-data.table(BRT2$contributions)
+        
+        BRT2_simple<-gbm.simplify_v2(BRT2,
+                                     n.folds=10,
+                                     n.drops=100,
+                                     eval.data=lakedata[train],
+                                     plot=FALSE)
+        
+        BRT2_final.drops<-BRT2_simple$final.drops
+        BRT2_final.drops$deviance.mean<-c(BRT2_simple$deviance.summary$mean,"NA","NA")
+        BRT2_final.drops$deviance.se<-c(BRT2_simple$deviance.summary$se,"NA","NA")
+        names(BRT2_final.drops)[1]<-"var"
+        BRT2_modeldata<-merge(BRT2_final.drops,BRT2_relimp,by="var",all=T)
+        BRT2_modeldata$set<-2
+        
+        BRT_modeldata<-rbind(BRT1_modeldata,BRT2_modeldata)
+        BRT_modeldata$lake<-lake
+        BRT_modeldata$split<-split
+        
+        
+            #print the model data 
+            # if the dataset does exist, append to it
+            if (exists("modeldata")){
+              modeldata<-rbindlist(list(modeldata,BRT_modeldata))
+            }
+            
+            # if the dataset doesnt exhist then create it
+            if (!exists("modeldata")){
+              modeldata<-BRT_modeldata
+            }
+            
+            rm(BRT1)
+            rm(BRT2)
+            rm(BRT1_simple)
+            rm(BRT2_simple)
+          
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+    }
+    
+    fwrite(modeldata,"U:/B.Kraemer/GlobalLakeLevels_IGB/GLL_modeldata_v6e.csv")
+    
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+#LakeNames<-droplevels(LakeNames[c(25:117)])
+LakeNames<-droplevels(LakeNames)
+#readwrite the data
+#fwrite(modeldata,"GLL_modeldata_v1.csv")
+#fwrite(modeldata_relimp,"modeldata_relimp_PCAsensitivity_v16.csv")
+
+modeldata<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/GLL_modeldata_v6.csv",stringsAsFactors = TRUE)
+#modeldata_relimp<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/GLL_modeldata_relimp_v3.csv")
+
+
+#find the best model
+names(modeldata)
+summary(modeldata)
+modeldata<-modeldata[,deviance.z:=deviance.mean/deviance.se]
+modeldata[is.na(deviance.z)==TRUE]$deviance.z<-2
+modeldata[is.finite(deviance.z)==FALSE]$deviance.z<-0
+modelmedians<-modeldata[,.(deviance.z=median(deviance.z),rel.inf=median(rel.inf)),.(var,lake)]
+
+names(modelmedians)
+summary(modelmedians)
+
+modelmedians<-modelmedians[,deviance.z.median:=median(deviance.z),.(lake)]
+modelmedians<-modelmedians[,deviance.z.iqr:=IQR(deviance.z),.(lake)]
+modelmedians<-modelmedians[,deviance.z.select:=deviance.z+deviance.z.median-(2*deviance.z.iqr),.(lake)]
+
+modelmedians<-modelmedians[,rel.inf.median:=median(rel.inf),.(lake)]
+modelmedians<-modelmedians[,rel.inf.iqr:=IQR(rel.inf),.(lake)]
+modelmedians<-modelmedians[,rel.inf.select:=rel.inf+rel.inf.median-(2*rel.inf.iqr),.(lake)]
+
+modelselect<-modelmedians[deviance.z.select>0|rel.inf.select>0]
+modelselect<-modelselect[deviance.z>0&rel.inf>1]
+
+names(modelselect)
+summary(modelselect)
+
+fwrite(modelselect,"U:/B.Kraemer/GlobalLakeLevels_IGB/GLL_modeldata_best_v17.csv")
+
+#Test
+lake<-"lake1970"
+lake<-"lake0315"
+lake<-"lake1992"
+lake<-"lake0003"
+
+#read in the data for brts
+TPJO_brt<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_brt_v2.csv",stringsAsFactors = TRUE)
+TPJO_brt<-TPJO_brt[order(lakeID,year,month),]
+rm(list=setdiff(ls(),c("TPJO_brt")))
+#percentvar<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/PCA_percentvar_v4.csv",header=TRUE,stringsAsFactors = TRUE)
+#names(percentvar)[2]<-"var"
+
+
+###Model loops
+#set model parameters
+LakeNames<-unique(TPJO_brt$lakeID)
+learningrate<-c(0.8192,0.4096,0.2048,0.1024,0.0512,0.0256,0.0128,0.0064,0.0032,0.0016,0.0008,0.0004,0.0002,0.0001,0.00005,0.000025,0.0000125,0.00000625,0.000003125,0.0000015625,.00000078125,0.000000360925)
+bestmodels<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/GLL_modeldata_best_v17.csv",header=TRUE,stringsAsFactors = TRUE)
+names(bestmodels)[2]<-"lakeID"
+
+###Model loops
+#Stragglers
+#LakeNames<-c("lake1970","lake0264","lake1992","lake0115","lake0393","lake1979")
+
+##loop for fitting the best BRT and finding residuals for trend estimation
+for(lake in LakeNames){
+  tryCatch({
+    
+    print(lake)
+    print(Sys.time())
+    
+    #prep the data
+    lakedata<-(TPJO_brt[which(TPJO_brt$lakeID==paste(lake,sep="")),])
+      
+    #Find the lake's best model
+    #bestmodel<-bestmodels[lakeID==lake]
+    #bestmodel_long<-as.data.table(t(bestmodel[,18:117]))
+    #bestmodel_long$PC<-colnames(bestmodel[,18:117])
+    #names(bestmodel_long)[1]<-"VarName"
+    
+    #set the predictors in the model
+    n<-droplevels(bestmodels[lakeID==lake]$var)
+    n<-which(names(TPJO_brt)%in%n)
+    n<-unique(c(1,331,n))  
+    
+    #fit the brt
+    for(lr in learningrate) {
+      tryCatch({
+        
+        BRT<-gbm.step(
+          data=lakedata,
+          gbm.x=n,
+          gbm.y=4,
+          family="gaussian",
+          tree.complexity=3,
+          learning.rate=lr,
+          max.trees=10000,
+          bag.fraction=0.2,
+          silent=TRUE,
+          plot.main=FALSE,
+          plot.folds=FALSE
+        )
+        
+        if(is.null(BRT)==FALSE){
+          if(BRT$n.trees>1000) {break}}
+        
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+    }
+    
+    lakedata$fit<-BRT$fitted
+    lakedata$residual<-BRT$residuals
+    lakedata$lr<-lr
+    
+    model<-data.frame(data="NA")
+    model$lake<-lake
+    model$n.trees<-BRT$n.trees
+    model$lr<-lr
+    
+    model$train_correlation<-BRT$self.statistics$correlation
+    model$train_mean.resid<-BRT$self.statistics$mean.resid
+    
+    model$test_correlation<-BRT$cv.statistics$correlation
+    model$test_mean.resid<-BRT$cv.statistics$mean.resid
+    model$test_deviance.mean<-BRT$cv.statistics$deviance.mean
+    model$test_deviance.se<-BRT$cv.statistics$deviance.se
+    model$test_correlation.mean<-BRT$cv.statistics$correlation.mean
+    model$test_correlation.se<-BRT$cv.statistics$correlation.se
+    
+    cor<-Kendall(lakedata$level,lakedata$fit)
+    model$correlation<-cor$tau
+    model$correlation_p<-cor$sl
+    
+    lm1<-lm(lakedata$fit~lakedata$level)
+    model$slope<-lm1$coefficients[2]
+    model$slope_p<-summary(lm1)$coefficients[2,4]
+    model$intercept<-lm1$coefficients[1]
+    model$intercept_p<-summary(lm1)$coefficients[1,4]
+    model$rsqr<-summary(lm1)$r.squared
+    model$df<-summary(lm1)$df[2]
+    
+    model$rmse<-sqrt(mean(lakedata$resid^2))
+    model$mad<-median(abs(lakedata$resid))
+    model$n<-nrow(lakedata)
+    
+    n_names<-names(TPJO_brt)[n]
+    model$PC1<-if('PC1'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC2<-if('PC2'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC3<-if('PC3'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC4<-if('PC4'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC5<-if('PC5'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC6<-if('PC6'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC7<-if('PC7'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC8<-if('PC8'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC9<-if('PC9'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC10<-if('PC10'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC11<-if('PC11'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC12<-if('PC12'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC13<-if('PC13'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC14<-if('PC14'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC15<-if('PC15'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC16<-if('PC16'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC17<-if('PC17'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC18<-if('PC18'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC19<-if('PC19'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC20<-if('PC20'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC21<-if('PC21'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC22<-if('PC22'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC23<-if('PC23'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC24<-if('PC24'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC25<-if('PC25'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC26<-if('PC26'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC27<-if('PC27'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC28<-if('PC28'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC29<-if('PC29'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC30<-if('PC30'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC31<-if('PC31'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC32<-if('PC32'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC33<-if('PC33'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC34<-if('PC34'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC35<-if('PC35'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC36<-if('PC36'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC37<-if('PC37'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC38<-if('PC38'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC39<-if('PC39'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC40<-if('PC40'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC41<-if('PC41'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC42<-if('PC42'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC43<-if('PC43'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC44<-if('PC44'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC45<-if('PC45'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC46<-if('PC46'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC47<-if('PC47'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC48<-if('PC48'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC49<-if('PC49'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC50<-if('PC50'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC51<-if('PC51'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC52<-if('PC52'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC53<-if('PC53'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC54<-if('PC54'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC55<-if('PC55'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC56<-if('PC56'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC57<-if('PC57'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC58<-if('PC58'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC59<-if('PC59'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC60<-if('PC60'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC61<-if('PC61'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC62<-if('PC62'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC63<-if('PC63'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC64<-if('PC64'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC65<-if('PC65'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC66<-if('PC66'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC67<-if('PC67'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC68<-if('PC68'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC69<-if('PC69'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC70<-if('PC70'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC71<-if('PC71'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC72<-if('PC72'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC73<-if('PC73'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC74<-if('PC74'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC75<-if('PC75'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC76<-if('PC76'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC77<-if('PC77'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC78<-if('PC78'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC79<-if('PC79'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC80<-if('PC80'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC81<-if('PC81'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC82<-if('PC82'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC83<-if('PC83'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC84<-if('PC84'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC85<-if('PC85'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC86<-if('PC86'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC87<-if('PC87'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC88<-if('PC88'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC89<-if('PC89'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC90<-if('PC90'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC91<-if('PC91'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC92<-if('PC92'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC93<-if('PC93'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC94<-if('PC94'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC95<-if('PC95'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC96<-if('PC96'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC97<-if('PC97'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC98<-if('PC98'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC99<-if('PC99'%in%n_names=='TRUE') {'T'} else {'F'}
+    model$PC100<-if('PC100'%in%n_names=='TRUE') {'T'} else {'F'}
+    #model$PC101<-if('PC101'%in%n_names=='TRUE') {'T'} else {'F'}
+    
+    #Partial dependence
+    for(var in BRT$var.names){
+      assign(paste0("partdep_",var),as.data.table(plot.gbm(BRT,return.grid=TRUE,i.var=var)))
+    }
+    
+    for (partdep in mget(ls(pattern="partdep_"))){
+      partdep$predictor.name<-names(partdep)[1]
+      assign(paste0("partdep_",names(partdep)[1]),as.data.table(partdep))
+    }
+    
+    var.partdeps<-rbindlist(mget(ls(pattern="partdep_")),fill=TRUE)
+    rm(partdep)
+    rm(list=ls(pattern="partdep_"))
+    names(var.partdeps)[c(1,2)]<-c("predictor.value","response.value")
+    var.partdeps$lake<-lake
+             
+            #print the model diagnistics data
+            # if the merged dataset does exist, append to it
+            if (exists("modeldata")){modeldata<-rbindlist(list(modeldata,model),fill=TRUE)}
+            # if the interpolated dataset doesnt exhist then create it
+            if (!exists("modeldata")){modeldata<-model}
+            
+            #print the lakedata with model output
+            # if the merged dataset does exist, append to it
+            if (exists("TPJO_brt_output")){TPJO_brt_output<-rbindlist(list(TPJO_brt_output,lakedata),fill=TRUE)}
+            # if the interpolated dataset doesnt exhist then create it
+            if (!exists("TPJO_brt_output")){TPJO_brt_output<-lakedata}
+            
+    #print the partial dependence data
+    # if the merged dataset does exist, append to it
+    if (exists("TPJO_partdep")){TPJO_partdep<-rbindlist(list(TPJO_partdep,var.partdeps),fill=TRUE)}
+    # if the interpolated dataset doesnt exhist then create it
+    if (!exists("TPJO_partdep")){TPJO_partdep<-var.partdeps}
+    
+    
+              #relative importance of each predictor in the model
+    model_relimp<-data.table(BRT$contributions)
+    model_relimp$lake<-lake
+    model_relimp$n.trees<-BRT$n.trees
+    model_relimp$lr<-lr
+    
+              #print the relative importance data
+              # if the merged dataset does exist, append to it
+              if (exists("modeldata_relimp")){modeldata_relimp<-rbindlist(list(modeldata_relimp,model_relimp),fill=TRUE)}
+              # if the interpolated dataset doesn exhist then create it
+              if (!exists("modeldata_relimp")){modeldata_relimp <- model_relimp}
+           
+            #rm(f)
+            #rm(index)
+            rm(BRT)
+            #rm(pr.nn_test)
+            #rm(pr.nn_train)
+            
+          }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+        }
+########################END LOOPS#############################
+
+#readwrite the data
+
+fwrite(modeldata,"U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_modeldata_v4.csv")
+TPJO_bestBRT_modeldata<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_modeldata_v4.csv",stringsAsFactors = TRUE)
+
+fwrite(TPJO_brt_output,"U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_output_v4.csv")
+TPJO_bestBRT_output<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_output_v4.csv",stringsAsFactors = TRUE)
+
+fwrite(modeldata_relimp,"U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_modeldata_relimp_v4.csv")
+TPJO_bestBRT_relimp<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_modeldata_relimp_v4.csv",stringsAsFactors = TRUE)
+
+fwrite(TPJO_partdep,"U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_partdep_v4.csv")
+TPJO_bestBRT_partdep<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_partdep_v4.csv",stringsAsFactors = TRUE)
+
+#exploratory plots
+plot(data=TPJO_bestBRT_partdep[predictor.name=="PC11"&lake=="lake0314"],response.value~predictor.value)
+names(TPJO_bestBRT_partdep)
+head(TPJO_bestBRT_partdep[,c(1:10)])
+unique(TPJO_bestBRT_partdep$predictor.name)
+
+#Calculate trends based on partial dependencies for decyear annual means
+TPJO_bestBRT_partdep<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_bestBRT_partdep_v4.csv",stringsAsFactors = TRUE)
+summary(TPJO_bestBRT_partdep)
+TPJO_bestBRT_trends_data<-TPJO_bestBRT_partdep[predictor.name=="decyear",
+                                          .(level=mean(response.value)),
+                                          .(floor(predictor.value),lake)]
+TPJO_bestBRT_trends_data<-TPJO_bestBRT_trends_data[order(lake,floor)]
+TPJO_bestBRT_trends_data[,dup:=duplicated(level),lake]
+TPJO_bestBRT_trends_data<-TPJO_bestBRT_trends_data[order(lake,-floor)]
+TPJO_bestBRT_trends_data[,dup2:=duplicated(level),lake]
+TPJO_bestBRT_trends_data<-TPJO_bestBRT_trends_data[dup=="FALSE"|dup2=="FALSE"]
+TPJO_bestBRT_trends<-TPJO_bestBRT_trends_data[floor!=1992&floor!=2019,.(slope=senP(floor,level,100)$slope,
+                                                 slope_p=senP(floor,level,100)$slope_p),
+                                              (lake)]
+
+summary(TPJO_bestBRT_trends_data)
+head(TPJO_bestBRT_trends_data)
+TPJO_bestBRT_trends_data<-TPJO_bestBRT_trends_data[,c(1:3)]
+TPJO_bestBRT_trends_data[,level_mean:=mean(level),lake]
+TPJO_bestBRT_trends_data$level<-TPJO_bestBRT_trends_data$level-TPJO_bestBRT_trends_data$level_mean
+TPJO_bestBRT_trends_data$year<-TPJO_bestBRT_trends_data$floor
+TPJO_bestBRT_trends_data<-TPJO_bestBRT_trends_data[,c(2,5,3)]
+
+#Calcualte trends based on raw lake level data annual means
+TPJO_interp_bymonth<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_interp_bymonth_v3.csv",header=TRUE)
+TPJO_trends_data<-TPJO_interp_bymonth[,.(level=mean(level)),.(lakeID,year)]
+TPJO_trends<-TPJO_trends_data[year!=1992&year!=2019,.(slope_raw=senP(year,level,100)$slope,
+                                        slope_p_raw=senP(year,level,100)$slope_p),
+                                      (lakeID)]
+TPJO_trends$lake<-TPJO_trends$lakeID
+summary(TPJO_trends_data)
+names(TPJO_trends_data)[1]<-"lake"
+TPJO_trends_data[,level_mean:=mean(level),lake]
+TPJO_trends_data$level<-TPJO_trends_data$level-TPJO_trends_data$level_mean
+TPJO_trends_data<-TPJO_trends_data[,c(1:3)]
+TPJO_trends_data$lake<-as.factor(TPJO_trends_data$lake)
+
+#Merge the raw and modeled slopes
+TPJO_trends<-merge(TPJO_trends,TPJO_bestBRT_trends)
+fwrite(TPJO_trends,"U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_trends_v4.csv")
+TPJO_trends<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_trends_v4.csv",stringsAsFactors = T)
+
+TPJO_trends$slope_p_raw<-round(TPJO_trends$slope_p_raw,digits=3)
+TPJO_trends$slope_p<-round(TPJO_trends$slope_p,digits=3)
+
+#merge the raw and modeled annual data
+TPJO_trends_data<-merge(TPJO_trends_data,TPJO_bestBRT_trends_data,all=TRUE,by=c("lake","year"))
+TPJO_trends_data<-TPJO_trends_data[year<2019&year>1992]
+names(TPJO_trends_data)<-c("lake","year","level_raw","level_detrend")
+fwrite(TPJO_trends_data,"U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_trends_data_v4.csv")
+TPJO_trends_data<-fread("U:/B.Kraemer/GlobalLakeLevels_IGB/TPJO_trends_data_v4.csv",stringsAsFactors = TRUE)
+
