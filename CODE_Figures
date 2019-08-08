@@ -1,1 +1,634 @@
+#########################################Figures#################################
+###this is the code for the figures associated with this project. for more information see
+###the associated manuscript
 
+#load relevant packages
+require(ggplot2)
+require(ncdf4)
+require(plyr)
+require(dplyr)
+require(reshape2)
+require(tidyr)
+require(forecast)
+require(zoo)
+require(FactoMineR)
+require(Kendall)
+require(NeuralNetTools)
+require(data.table)
+require(lubridate)
+require(ggrepel)
+require(dismo)
+require(gbm)
+require(gridExtra)
+require(stringr)
+require(rgdal)
+require(ggalt)
+require(ggthemes)
+require(grid)
+require(trend)
+require(zyp)
+require(rkt)
+require(cowplot)
+require(scales)
+require(ggpubr)
+require(splitstackshape)
+require(curl)
+
+#set the working directory
+setwd("")  #Change this to suit your working directory
+
+#transformations
+asinh_trans<-function(){
+  trans_new(name='asinh',transform=function(x) asinh(x),
+            inverse=function(x) sinh(x))
+}
+
+#FIGURE A: plot of the p values of lake level trends before and after accoutning for background climate variability.####
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_trends_v4.csv"
+TPJO_trends<-read.csv(url)
+TPJO_trends[slope_raw>1]$slope<-NA
+TPJO_trends_l<-melt(TPJO_trends,id=c("lake","lakeID"))
+
+a<-ggplot()+
+  geom_segment(data=TPJO_trends,
+               aes(y=slope_p_raw,
+                   x=rank(slope_p_raw),
+                   yend=slope_p,
+                   xend=rank(slope_p_raw),
+                   colour=-sqrt(slope_p_raw)+sqrt(slope_p)))+
+  scale_colour_gradientn(colors=c("black","black","black","darkgrey","darkgrey","darkgrey"),
+                         breaks=c(-.3,0,.3),
+                         limits=c(-1,1),
+                         values=c(0,.4999999999999,.5000000000001,1))+
+  guides(color=FALSE)+
+  geom_point(data=TPJO_trends,
+             aes(y=slope_p_raw,
+                 x=rank(slope_p_raw)),
+             colour="#00AFBB")+
+  geom_point(data=TPJO_trends,
+             aes(y=slope_p,
+                 x=rank(slope_p_raw)),
+             colour="#FC4E07",
+             size=.9)+
+  scale_y_sqrt(breaks=c(0.01,0.05,0.1,0.5),
+               limits=c(0,0.63),
+               expand = c(0, 0))+
+  scale_x_continuous(limits=c(0,118),
+                     expand = c(0, 0))+
+  theme_bw()+
+  labs(y="Water level trend p-value",x="Rank of water level trend p-value")
+
+b<-ggplot()+
+  geom_density(data=TPJO_trends_l[variable=="slope_p_raw"|variable=="slope_p"],
+               aes(value,fill=variable,colour=NA),
+               adjust = .7,
+               alpha=.7)+
+  scale_x_sqrt(breaks=c(0.01,0.05,0.1,0.5),
+               limits=c(0,0.63),
+               expand = c(0, 0))+
+  scale_colour_manual(values=c("black","black"))+
+  scale_fill_manual(values=c("#00AFBB","#FC4E07"),
+                    name = NULL, 
+                    labels = c("raw p-value","p-value after 
+removing 
+background 
+climate effects"))+
+  theme_void()+
+  coord_flip()+
+  guides(colour=FALSE)
+
+print(ggarrange(a,b, 
+          ncol = 2, nrow = 1,  align = "hv"),
+      common.legend=TRUE,
+      legend="bottom")
+
+
+#FIGURE B: plot of the lake level trends before and after accoutning for background climate variability.####
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_trends_v4.csv"
+TPJO_trends<-read.csv(url)
+TPJO_trends[slope_raw>1]$slope<-NA
+TPJO_trends_l<-melt(TPJO_trends,id=c("lake","lakeID"))
+
+a<-ggplot()+
+  geom_segment(data=TPJO_trends,
+               aes(y=100*slope_raw,
+                   x=rank(slope_raw),
+                   yend=100*slope,
+                   xend=rank(slope_raw),
+                   colour=slope-slope_raw))+
+  scale_colour_gradientn(colors=c("black","black","black","darkgrey","darkgrey","darkgrey"),
+                         breaks=c(-.5,0,.5),
+                         limits=c(-.5,.5),
+                         values=c(0,.4999999999999,.5000000000001,1),
+                         labels=NULL)+
+  geom_point(data=TPJO_trends,
+             aes(y=100*slope_raw,
+                 x=rank(slope_raw)),
+             colour="#00AFBB")+
+  geom_point(data=TPJO_trends,
+             aes(y=100*slope,
+                 x=rank(slope_raw)),
+             colour="#FC4E07")+
+  scale_y_continuous(trans='asinh',
+                     limits=c(-100,500),
+                     expand = c(0, 0),
+                     breaks=c(-50,-5,-.5,0,.5,5,50))+
+  scale_x_continuous(limits=c(0,118),
+                     expand = c(0, 0))+
+  theme_bw()+
+  guides(color=FALSE)+
+  labs(y="Water level trend (cm year^-1)",x="Rank of water level trend")
+
+b<-ggplot()+
+  geom_density(data=na.omit(TPJO_trends_l[variable=="slope_raw"|variable=="slope"]),
+               aes(100*value,fill=variable,colour=NA),
+               adjust = 1,
+               alpha=.7)+
+  scale_x_continuous(trans='asinh',
+                     limits=c(-100,500),
+                     breaks=c(-50,-5,-.5,0,.5,5,50),
+                     #limits=c(-50,50),
+                     expand = c(0, 0))+
+  scale_colour_manual(values=c("black","black"))+
+  scale_fill_manual(values=c("#00AFBB","#FC4E07"),
+                    name = NULL, 
+                    labels = c("raw slope","slope after removing 
+background climate effects"))+
+  theme_void()+
+  coord_flip()+
+  guides(colour=FALSE)
+
+print(ggarrange(a,b, 
+                ncol = 2, nrow = 1,  align = "hv"),
+      common.legend=TRUE,
+      legend="bottom")
+
+#FIGURE C: Correaltions between PCs and temperature and telleconnections across space and time.####
+#plot the contributions across space
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_PCA_cor_v4.csv"
+PCA_cor<-read.csv(url)
+PCA_cor<-cSplit(PCA_cor,"lonlat",sep="lat")
+PCA_cor$lonlat_1<-gsub("lon","",PCA_cor$lonlat_1)
+PCA_cor$lonlat_1<-as.numeric(PCA_cor$lonlat_1)
+PCA_cor<-PCA_cor[,c(6,7,1,2,3)]
+names(PCA_cor)<-c("lon","lat","PCcor","PCcor_p","var")
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_lakeinfo_v1.csv"
+lakeinfo<-read.csv(url)
+lakeinfo$lake<-as.factor(lakeinfo$lake)
+lakeinfo$lakeID<-as.factor(lakeinfo$lakeID)
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_bestBRT_modeldata_relimp_v4.csv"
+TPJO_bestBRT_relimp<-read.csv(url)
+TPJO_bestBRT_relimp$var<-as.factor(TPJO_bestBRT_relimp$var)
+TPJO_bestBRT_relimp$lake<-as.factor(TPJO_bestBRT_relimp$lake)
+TPJO_bestBRT_relimp<-TPJO_bestBRT_relimp[,count:=.N,by=lake]
+TPJO_bestBRT_relimp<-droplevels(TPJO_bestBRT_relimp)
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_trends_v4.csv"
+TPJO_trends<-read.csv(url)
+TPJO_bestBRT_relimp<-TPJO_bestBRT_relimp[,count:=.N,by=lake]
+TPJO_bestBRT_relimp[,rel.inf_scaled:=rel.inf*count/100]
+
+relimp<-expand.grid(lake=unique(TPJO_bestBRT_relimp$lake),var=unique(TPJO_bestBRT_relimp$var))
+relimp_exp<-as.data.table(merge(relimp,TPJO_bestBRT_relimp,all.x=TRUE,by=c("lake","var")))
+relimp_exp[is.na(rel.inf)=="TRUE"]$rel.inf<-0
+relimp_exp[is.na(rel.inf_scaled)=="TRUE"]$rel.inf_scaled<-0
+relimp_exp<-as.data.table(relimp_exp)
+
+relimp_mean<-relimp_exp[,.(rel.inf_mean=mean(rel.inf)),by=var]
+relimp.scaled_mean<-relimp_exp[,.(rel.inf_scaled_mean=mean(rel.inf_scaled)),by=var]
+relimp.scaled_mean<-relimp.scaled_mean[order(rel.inf_scaled_mean)]
+
+relimp_exp_winfo<-merge(relimp_exp,lakeinfo,all.x=TRUE)
+
+# read shapefile
+wmap <- readOGR(dsn="", layer="ne_110m_land")#set the dsn to your working directory and download from github, unzip by hand for now
+# convert to dataframe
+wmap_df <- fortify(wmap)
+
+PCA_cor_sub<-as.data.table(PCA_cor)[
+                           var=="PC2"|
+                           var=="PC4"|
+                           var=="PC5"]
+relimp_exp_winfo_sub<-as.data.table(relimp_exp_winfo)[
+  var=="PC2"|
+    var=="PC4"|
+    var=="PC5"]#|
+    
+relimp_exp_winfo_sub<-droplevels(relimp_exp_winfo_sub)
+relimp_exp_winfo_sub$var<-as.factor(relimp_exp_winfo_sub$var)
+levels(relimp_exp_winfo_sub$var)<-c("PC[ENSO]",
+                                    "PC[NPO]",
+                                    "PC[NAO]")
+
+PCA_cor_sub<-droplevels(PCA_cor_sub)
+PCA_cor_sub$var<-as.factor(PCA_cor_sub$var)
+levels(PCA_cor_sub$var)<-c("PC[ENSO]",
+                           "PC[NPO]",
+                           "PC[NAO]")
+
+relimp_exp_winfo_sub<-as.data.table(relimp_exp_winfo_sub)
+summary(PCA_cor_sub)
+
+ggplot()+
+  geom_raster(data=PCA_cor_sub,aes(x=lon,y=lat,fill=PCcor,alpha=(10^(3*(1-PCcor_p)))/1000),interpolate=TRUE)+
+  scale_alpha_continuous(trans="exp")+
+  geom_path(data=wmap_df,aes(x=long,y=lat,group=group),colour="gray55")+
+  scale_fill_distiller(palette = "Spectral",
+                       values=c(0,.4,.5,.6,1)
+                       ,limits=c(-.91,0.91))+
+  scale_y_continuous(limits=c(-66,86),
+                     expand=c(0,0))+
+  scale_x_continuous(limits=c(-180,180),
+                     expand=c(0,0))+
+  geom_point(data=relimp_exp_winfo_sub[rel.inf_scaled>0],
+             aes(x=lon,
+                 y=lat,
+                 size=rel.inf_scaled,
+                 alpha=.4))+
+  scale_radius(
+    range=c(0.2,6),
+    trans="sqrt")+
+  geom_point(data=relimp_exp_winfo_sub[rel.inf_scaled==0],
+             aes(x=lon,
+                 y=lat),shape=1,size=1)+
+  facet_wrap(~var,ncol=1,labeller = label_parsed)+
+  theme_bw()+
+  theme(text = element_text(size=14))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"))+
+  labs(size="Relative 
+Influence",
+       fill="Correlation between 
+surface temperature 
+and the PC",
+       x="Longitude",
+       y="Latitude",
+       alpha=NULL,
+       shape=NULL)+
+  guides(alpha=FALSE)
+
+
+####FIGURE D: Time series of PCs compared to time series of indexes.####
+#subsetted TPJO data with outliers removed
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_PCA_scores_detrend_v2.csv"
+PCA_brt<-read.csv(url)
+PCA_brt_l<-PCA_brt%>%
+  gather(PC,value,2:327)
+PCA_brt_l_sub<-droplevels(as.data.table(PCA_brt_l)[
+  PC=="PC2"|
+    PC=="PC4"|
+    PC=="PC5"
+    ])
+PCA_brt_l_sub$date<-date_decimal(PCA_brt_l_sub$decyear)
+PCA_brt_l_sub$month<-as.numeric(month(PCA_brt_l_sub$date))
+PCA_brt_l_sub<-PCA_brt_l_sub[order(PCA_brt_l_sub$date),]
+
+PCA_brt_l_sub<-droplevels(PCA_brt_l_sub)
+PCA_brt_l_sub$PC<-as.factor(PCA_brt_l_sub$PC)
+levels(PCA_brt_l_sub$PC)<-c("PC[ENSO]",
+                            "PC[NPO]",
+                            "PC[NAO]")
+PCA_brt_l_sub[which(PCA_brt_l_sub$PC=="PC[NAO]"),]$value<-
+ (-PCA_brt_l_sub[which(PCA_brt_l_sub$PC=="PC[NAO]"),]$value)
+
+PCA_brt_l_sub<-PCA_brt_l_sub%>%
+  group_by(PC)%>%
+  mutate(median=median(value,na.rm=TRUE),
+         mad=mad(value,na.rm=TRUE))
+PCA_brt_l_sub$value<-(PCA_brt_l_sub$value-PCA_brt_l_sub$median)/PCA_brt_l_sub$mad
+
+#indeces
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_Indeces_v3.csv"
+index<-read.csv(url)
+index<-index[,1:14]
+index_l<-index %>%
+  gather(month,value,3:14)
+names(index_l)<-c("index","year","month","value")
+index_l$day<-15
+index_l$date<-as.Date(with(index_l, paste(year, month, day,sep="-")), "%Y-%b-%d")
+index_l<-index_l[order(index_l$date),]
+index_l$PC<-NA
+index_l[which(index_l$index=="NP"),]$PC<-"PC[NPO]"
+index_l[which(index_l$index=="MEI"),]$PC<-"PC[ENSO]"
+index_l[which(index_l$index=="NAO"),]$PC<-"PC[NAO]"
+index_l_sub<-droplevels(as.data.table(index_l)[is.na(PC)==FALSE])
+index_l_sub<-index_l_sub%>%
+  group_by(PC)%>%
+  mutate(median=median(value,na.rm=TRUE),
+            mad=mad(value,na.rm=TRUE))
+index_l_sub$value<-(index_l_sub$value-index_l_sub$median)/index_l_sub$mad
+index_l_sub<-index_l_sub[order(index_l_sub$date),]
+
+ggplot()+
+  geom_point(data=PCA_brt_l_sub,aes(y=value,x=as.Date(date),colour="PC"),alpha=.3)+
+  geom_smooth(data=PCA_brt_l_sub,aes(y=value,x=as.Date(date),colour="PC"),span=.1,se=FALSE,method="loess")+
+  geom_point(data=index_l_sub,aes(y=value,x=as.Date(date),colour="Index"),alpha=.3)+
+  geom_smooth(data=index_l_sub,aes(y=value,x=as.Date(date),colour="Index"),span=.1,se=FALSE,method="loess")+
+  scale_x_date(limits=as.Date(c("1992-08-01","2019-01-01")),expand=c(0,0))+
+  theme_bw()+
+  theme(text = element_text(size=14))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        legend.title=element_blank())+
+  labs(x="Year",y="Value z-score")+
+  facet_wrap(~PC,ncol=1,labeller=label_parsed,scales="free_y")
+
+#FIGURE E: trend map for lake levels and proportion ov variability attributable to background climate####
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_trends_v4.csv"
+TPJO_trends<-read.csv(url)
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_lakeinfo_v1.csv"
+lakeinfo<-read.csv(url)
+TPJO_trends_winfo<-as.data.table(merge(TPJO_trends,lakeinfo,all.x=TRUE))
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_relimp_exp_PCs_v1.csv"
+relimp_exp_PCs<-read.csv(url)
+TPJO_trends_winfo<-as.data.table(merge(TPJO_trends_winfo,relimp_exp_PCs,all.x=TRUE))
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_bestBRT_modeldata_v4.csv"
+TPJO_bestBRT_modeldata<-read.csv(url)
+TPJO_trends_winfo<-as.data.table(merge(TPJO_trends_winfo,TPJO_bestBRT_modeldata,all.x=TRUE))
+TPJO_trends_winfo[slope_raw>1]$slope_raw<-1
+
+mapWorld<- borders("world", colour="black", fill="black")
+
+ggplot()+
+  mapWorld+
+  scale_y_continuous(limits=c(-60,86),
+                     expand=c(0,0))+
+  scale_x_continuous(#limits=c(-180,180),
+    expand=c(0,0))+
+  geom_point(data=TPJO_trends_winfo,
+             aes(x=lon,
+                 y=lat,
+                 colour=slope_raw,
+                 size=(slope_p_raw)))+
+  scale_size(trans="sqrt", 
+             range=c(4, 1), breaks=c(0.01,0.05,0.1,0.5,1))+
+  scale_colour_distiller(palette = "Spectral",
+                         values=c(0,.48,.5,.52,1)
+                         #,limits=c(min(relimp_wInfo$rel_imp_perPCA),max(relimp_wInfo$rel_imp_perPCA)))+
+                         ,limits=c(-1,1))+
+  theme_bw()+
+  theme(text = element_text(size=12))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.title.x=element_blank(),
+        legend.position="bottom",
+        legend.box = "vertical",
+        #legend.spacing.y=0.5,
+        axis.text.x=element_blank(),
+        #axis.title.y =element_blank(),
+        plot.title = element_text(margin = margin(t = 2, b = -14)))+
+  labs(size="p-value",
+       x="Longitude",
+       y="",
+       colour="Slope (m/year)")#+
+  
+####FIGURE P: Effects of PCs on lake levels in specific lakes
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_bestBRT_partdep_v4.csv"  
+partdep<-read.csv(url)
+  partdep_new<-partdep[,.(response.value.median=median(response.value),response.value.mad=mad(response.value)),lake]
+  partdep<-merge(partdep,partdep_new,all.x=TRUE)
+  partdep$response.value.z<-(partdep$response.value-partdep$response.value.median)/partdep$response.value.mad
+  summary(partdep)
+  
+  url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_lakeinfo_v1.csv"
+  lakeinfo<-read.csv(url)
+  partdep<-merge(partdep,lakeinfo,all.x=TRUE)
+  partdep<-as.data.table(partdep,stringsAsFactors=T)
+  partdep$lakename<-as.factor(partdep$lakename)
+  partdep<-partdep[order(predictor.name,lakename)]
+  summary(partdep)
+  
+  a<-ggplot()+
+  geom_smooth(data=partdep[is.na(groupingENSO)==FALSE&predictor.name=="PC2"],
+              aes(y=response.value.z,
+                  x=PC2,
+                  group=lakename),
+              span=.5,
+              se=FALSE,
+              colour="#d8b365")+
+  facet_wrap(~groupingENSO,scales = "free_y",ncol=2)+
+  labs(x=bquote(~PC[ENSO]),
+       y="Lake level z-score")+
+  theme_bw()
+
+b<-ggplot()+
+  geom_smooth(data=partdep[is.na(groupingNAO)==FALSE&predictor.name=="PC5"],
+              aes(y=response.value.z,
+                  x=PC5,
+                  group=lakename),
+              span=.5,
+              se=FALSE,
+              colour="#5ab4ac")+
+  labs(x=bquote(~PC[NAO]),
+       y="Lake level z-score")+
+  facet_wrap(~groupingNAO,scales = "free_y",ncol=2)+
+  theme_bw()
+
+c<-ggplot()+
+  geom_smooth(data=partdep[is.na(groupingNPO)==FALSE&predictor.name=="PC4"],
+              aes(y=response.value.z,
+                  x=PC4,
+                  group=lakename),
+              span=.5,
+              se=FALSE,
+              colour="firebrick4")+
+  labs(x=bquote(~PC[NPO]),
+       y="Lake level z-score")+
+  facet_wrap(~groupingNPO,scales = "free_y",ncol=2)+
+  theme_bw()
+
+plot_grid(a,b,ncol=1#, 
+          #align="v",
+          #axis=c("lr","lr"),
+          #labels=FALSE
+          ) 
+
+#FIGURE Q: Correaltions between PCs and temperature and telleconnections across space and time.####
+#plot the contributions across space for a PC which is not correlated to a NOAA index
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_PCA_cor_v4.csv"
+PCA_cor<-read.csv(url)
+PCA_cor<-cSplit(PCA_cor,"lonlat",sep="lat")
+PCA_cor$lonlat_1<-gsub("lon","",PCA_cor$lonlat_1)
+PCA_cor$lonlat_1<-as.numeric(PCA_cor$lonlat_1)
+PCA_cor<-PCA_cor[,c(6,7,1,2,3)]
+names(PCA_cor)<-c("lon","lat","PCcor","PCcor_p","var")
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_lakeinfo_v1.csv"
+lakeinfo<-read.csv(url)
+lakeinfo$lake<-as.factor(lakeinfo$lake)
+lakeinfo$lakeID<-as.factor(lakeinfo$lakeID)
+
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_bestBRT_modeldata_relimp_v4.csv"
+TPJO_bestBRT_relimp<-read.csv(url)
+TPJO_bestBRT_relimp$var<-as.factor(TPJO_bestBRT_relimp$var)
+TPJO_bestBRT_relimp$lake<-as.factor(TPJO_bestBRT_relimp$lake)
+TPJO_bestBRT_relimp<-TPJO_bestBRT_relimp[,count:=.N,by=lake]
+TPJO_bestBRT_relimp<-droplevels(TPJO_bestBRT_relimp)
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_trends_v4.csv"
+TPJO_trends<-read.csv(url)
+
+TPJO_bestBRT_relimp<-TPJO_bestBRT_relimp[,count:=.N,by=lake]
+TPJO_bestBRT_relimp[,rel.inf_scaled:=rel.inf*count/100]
+relimp<-expand.grid(lake=unique(TPJO_bestBRT_relimp$lake),var=unique(TPJO_bestBRT_relimp$var))
+relimp_exp<-as.data.table(merge(relimp,TPJO_bestBRT_relimp,all.x=TRUE,by=c("lake","var")))
+relimp_exp[is.na(rel.inf)=="TRUE"]$rel.inf<-0
+relimp_exp[is.na(rel.inf_scaled)=="TRUE"]$rel.inf_scaled<-0
+relimp_exp<-as.data.table(relimp_exp)
+relimp_mean<-relimp_exp[,.(rel.inf_mean=mean(rel.inf)),by=var]
+relimp.scaled_mean<-relimp_exp[,.(rel.inf_scaled_mean=mean(rel.inf_scaled)),by=var]
+relimp.scaled_mean<-relimp.scaled_mean[order(rel.inf_scaled_mean)]
+relimp_exp_winfo<-merge(relimp_exp,lakeinfo,all.x=TRUE)
+
+# read shapefile
+wmap <- readOGR(dsn="", layer="ne_110m_land")#set the dsn to your working directory and download from github, unzip by hand for now
+# convert to dataframe
+wmap_df <- fortify(wmap)
+
+PCA_cor_sub<-as.data.table(PCA_cor)[
+  var=="PC15"]
+
+relimp_exp_winfo_sub<-as.data.table(relimp_exp_winfo)[
+  var=="PC15"]
+
+relimp_exp_winfo_sub<-droplevels(relimp_exp_winfo_sub)
+relimp_exp_winfo_sub$var<-as.factor(relimp_exp_winfo_sub$var)
+levels(relimp_exp_winfo_sub$var)<-c("PC[15]")
+
+PCA_cor_sub<-droplevels(PCA_cor_sub)
+PCA_cor_sub$var<-as.factor(PCA_cor_sub$var)
+levels(PCA_cor_sub$var)<-c("PC[15]")
+
+relimp_exp_winfo_sub<-as.data.table(relimp_exp_winfo_sub)
+
+a<-ggplot()+
+  geom_raster(data=PCA_cor_sub,aes(x=lon,y=lat,fill=PCcor,alpha=(10^(3*(1-PCcor_p)))/1000),interpolate=TRUE)+
+  scale_alpha_continuous(trans="exp")+
+  geom_path(data=wmap_df,aes(x=long,y=lat,group=group),colour="gray55")+
+  scale_fill_distiller(palette = "Spectral",
+                       values=c(0,.4,.5,.6,1)
+                       ,limits=c(-.91,0.91))+
+  scale_y_continuous(limits=c(-66,86),
+                     expand=c(0,0))+
+  scale_x_continuous(limits=c(-180,180),
+                     expand=c(0,0))+
+  geom_point(data=relimp_exp_winfo_sub[rel.inf_scaled>0],
+             aes(x=lon,
+                 y=lat,
+                 size=rel.inf_scaled,
+                 alpha=.4))+
+  scale_radius(
+    range=c(2,6),
+    trans="sqrt")+
+  geom_point(data=relimp_exp_winfo_sub[rel.inf_scaled==0],
+             aes(x=lon,
+                 y=lat),shape=1,size=1)+
+  theme_bw()+
+  theme(text = element_text(size=14))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        legend.position="bottom",
+        legend.box = "vertical")+
+  labs(size="Relative Influence",
+       fill=expression(paste("Correlation between surface temperature and ",PC[15],sep="")),
+       x="Longitude",
+       y="Latitude",
+       alpha=NULL,
+       shape=NULL)+
+  guides(alpha=FALSE)
+
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_PCA_scores_detrend_v2.csv"
+PCA_brt<-read.csv(url)
+head(PCA_brt[,c(1:10,300:323)])
+PCA_brt_l<-PCA_brt%>%
+  gather(PC,value,2:327)
+PCA_brt_l_sub<-droplevels(as.data.table(PCA_brt_l)[
+  PC=="PC15"])
+PCA_brt_l_sub$date<-date_decimal(PCA_brt_l_sub$decyear)
+PCA_brt_l_sub$month<-as.numeric(month(PCA_brt_l_sub$date))
+PCA_brt_l_sub<-PCA_brt_l_sub[order(PCA_brt_l_sub$date),]
+
+PCA_brt_l_sub<-droplevels(PCA_brt_l_sub)
+PCA_brt_l_sub$PC<-as.factor(PCA_brt_l_sub$PC)
+levels(PCA_brt_l_sub$PC)<-c("PC[15]")
+
+b<-ggplot()+
+  geom_point(data=PCA_brt_l_sub,aes(y=value,x=as.Date(date)),alpha=.3)+
+  geom_smooth(data=PCA_brt_l_sub,aes(y=value,x=as.Date(date)),span=.1,se=FALSE,method="loess",colour="black")+
+  scale_x_date(limits=as.Date(c("1992-08-01","2019-01-01")),expand=c(0,0))+
+  theme_bw()+
+  theme(text = element_text(size=14))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        legend.title=element_blank())+
+  labs(x="Year",y=bquote(~PC[15]))#+
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_bestBRT_partdep_v4.csv"  
+partdep<-read.csv(url)
+partdep_new<-partdep[,.(response.value.median=median(response.value),response.value.mad=mad(response.value)),lake]
+partdep<-merge(partdep,partdep_new,all.x=TRUE)
+partdep$response.value.z<-(partdep$response.value-partdep$response.value.median)/partdep$response.value.mad
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_lakeinfo_v1.csv"
+lakeinfo<-read.csv(url)
+partdep<-merge(partdep,lakeinfo,all.x=TRUE)
+partdep<-as.data.table(partdep)
+partdep$lakename<-as.factor(partdep$lakename)
+partdep<-partdep[order(predictor.name,lakename)]
+
+c<-ggplot()+
+  geom_smooth(data=partdep[is.na(groupingPC15)==FALSE&predictor.name=="PC15"],
+              aes(y=response.value.z,
+                  x=predictor.value/10,
+                  group=lakename),
+              span=.5,
+              se=FALSE,
+              colour="#339900")+
+  facet_wrap(~groupingPC15,scales = "free_y",ncol=3)+
+  labs(x=bquote(~PC[15]),
+       y="Lake level z-score")+
+  theme_bw()
+
+print(plot_grid(a,b,c,ncol=1,rel_heights=c(3,1,1)))
+
+####FIG R: Time series of a lake with masked trend and a lake with false trend  ####
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_interp_bymonth_v3.csv"
+TPJO_interp_bymonth<-read.csv(url)
+TPJO_interp_bymonth$level<-TPJO_interp_bymonth$level-
+  TPJO_interp_bymonth[,levelmean:=mean(level),.(lakeID)]$levelmean
+levels(TPJO_interp_bymonth$lakeID)
+levels(TPJO_interp_bymonth$lakeID)[c(79,80)]<-c("Lake Mweru","Kainji Lake")
+
+url<-"https://github.com/bkraemer/GlobalLakeLevels/blob/master/DATA_TPJO_bestBRT_partdep_v4.csv"  
+partdep<-read.csv(url)
+partdep_new<-partdep[,.(response.value.median=median(response.value),response.value.mad=mad(response.value)),lake]
+partdep<-merge(partdep,partdep_new,all.x=TRUE)
+partdep$response.value.z<-(partdep$response.value-partdep$response.value.median)/partdep$response.value.mad
+partdep$lakeID<-partdep$lake
+partdep[,response.value.centered:=response.value-mean(response.value),.(lakeID)]
+summary(partdep)
+levels(partdep$lakeID)
+levels(partdep$lakeID)[c(79,80)]<-c("Lake Mweru","Kainji Lake")
+
+
+ggplot()+
+  geom_line(data=TPJO_interp_bymonth[lakeID=="Lake Mweru"|
+                                       lakeID=="Kainji Lake"],aes(y=level,x=decyear))+
+  geom_line(data=partdep[lakeID=="Lake Mweru"|
+                                       lakeID=="Kainji Lake"][predictor.name=="decyear"],
+            aes(y=response.value.centered,x=predictor.value),colour="red")+
+  facet_wrap(~lakeID,scales="free_y")+
+  theme_bw()+
+  labs(y="Water level (m)",
+       x="Year")
